@@ -14,19 +14,15 @@ const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
 
 console.log('─────────────────────────────────────');
 console.log('📋 ENV STATUS CHECK');
-console.log(`   SUPABASE_URL          : ${SUPABASE_URL ? '✅ loaded' : '❌ MISSING'}`);
-console.log(`   SUPABASE_SERVICE_ROLE : ${SUPABASE_SERVICE_ROLE ? '✅ loaded' : '❌ MISSING'}`);
+console.log(`   SUPABASE_URL          : ${SUPABASE_URL ? 'OK' : 'MISSING'}`);
+console.log(`   SUPABASE_SERVICE_ROLE : ${SUPABASE_SERVICE_ROLE ? 'OK' : 'MISSING'}`);
 console.log('─────────────────────────────────────');
 
 let isOfflineMode = false;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
-  console.warn('🚨 Running in OFFLINE MODE (Supabase disabled)');
+  console.warn('🚨 OFFLINE MODE ENABLED');
   isOfflineMode = true;
-}
-
-if (!process.env.ADMIN_JWT_SECRET) {
-  console.warn('⚠️ ADMIN_JWT_SECRET is not set — using insecure default');
 }
 
 // ─────────────────────────────────────────────
@@ -45,64 +41,46 @@ const app = express();
 // ─────────────────────────────────────────────
 // CORS
 // ─────────────────────────────────────────────
-const ALLOWED_ORIGINS = [
-  'http://localhost:5174',
-  'http://localhost:5175',
-  'http://127.0.0.1:5175'
-];
-
 app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
 
-    if (ALLOWED_ORIGINS.includes(origin)) {
-      return callback(null, true);
-    }
+    const allowed = [
+      'http://localhost:5174',
+      'http://localhost:5175',
+      'http://127.0.0.1:5175'
+    ];
 
-    console.warn(`🚫 CORS blocked origin: ${origin}`);
-    return callback(new Error(`CORS policy blocked: ${origin}`), false);
+    if (allowed.includes(origin)) return cb(null, true);
+
+    return cb(new Error('CORS BLOCKED'), false);
   },
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 app.use(express.json());
 
 // ─────────────────────────────────────────────
-// ADMIN ROUTES
+// ROUTES
 // ─────────────────────────────────────────────
 app.use('/admin', adminRouter);
 
-// ─────────────────────────────────────────────
-// HEALTH CHECK
-// ─────────────────────────────────────────────
 app.get('/', (req, res) => {
-  res.json({ status: 'JFY License API Running' });
-});
-
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    mode: isOfflineMode ? 'offline' : 'online'
-  });
+  res.json({ status: 'JFY API RUNNING' });
 });
 
 // ─────────────────────────────────────────────
-// LICENSE VERIFICATION ENDPOINT
+// 🔥 VERIFY LICENSE (FIXED CORE)
 // ─────────────────────────────────────────────
 app.post('/verify-license', async (req, res) => {
   try {
-    console.log('🔥 VERIFY-LICENSE HIT');
-    console.log('BODY:', req.body);
-
     const { licenseKey, fingerprint } = req.body;
 
-    // ─────────────────────────────────────
-    // BASIC VALIDATION
-    // ─────────────────────────────────────
+    console.log('🔥 VERIFY:', licenseKey);
+
     if (!licenseKey || typeof licenseKey !== 'string') {
-      return res.status(400).json({
+      return res.json({
         success: false,
         activated: false,
         error: 'INVALID_LICENSE'
@@ -111,55 +89,30 @@ app.post('/verify-license', async (req, res) => {
 
     const cleanKey = licenseKey.trim();
 
-    // ─────────────────────────────────────
-    // STRICT PREFIX CHECK
-    // ─────────────────────────────────────
-    if (!cleanKey.startsWith('JFY-')) {
-      return res.json({
-        success: false,
-        activated: false,
-        error: 'INVALID_LICENSE'
-      });
-    }
-
-    // ─────────────────────────────────────
-    // OFFLINE MODE BLOCK
-    // ─────────────────────────────────────
-    if (isOfflineMode) {
-      console.warn('❌ OFFLINE MODE ACTIVE');
-
-      return res.status(503).json({
-        success: false,
-        activated: false,
-        error: 'NETWORK_ERROR'
-      });
-    }
-
-    // ─────────────────────────────────────
-    // FETCH LICENSE FROM SUPABASE
-    // ─────────────────────────────────────
-    const { data: license, error: fetchError } = await supabase
+    // ─────────────────────────────────────────────
+    // FIX #1: AVOID .single() CRASH (MAIN BUG FIX)
+    // ─────────────────────────────────────────────
+    const { data, error } = await supabase
       .from('licenses')
       .select('*')
       .eq('license_key', cleanKey)
-      .single();
+      .limit(1);
 
-    if (fetchError) {
-      console.error('❌ SUPABASE FETCH ERROR:', fetchError);
-
-      return res.status(500).json({
+    if (error) {
+      console.error('❌ SUPABASE ERROR:', error);
+      return res.json({
         success: false,
         activated: false,
         error: 'NETWORK_ERROR'
       });
     }
 
-    // ─────────────────────────────────────
+    const license = data?.[0];
+
+    // ─────────────────────────────────────────────
     // LICENSE NOT FOUND
-    // ─────────────────────────────────────
+    // ─────────────────────────────────────────────
     if (!license) {
-      console.log('❌ LICENSE NOT FOUND');
-
       return res.json({
         success: false,
         activated: false,
@@ -167,59 +120,33 @@ app.post('/verify-license', async (req, res) => {
       });
     }
 
-    // ─────────────────────────────────────
-    // LICENSE STATUS CHECK
-    // ─────────────────────────────────────
-    if (license.status !== 'active') {
-      console.log('❌ LICENSE IS NOT ACTIVE');
-
-      return res.json({
-        success: false,
-        activated: false,
-        error: 'INVALID_LICENSE'
-      });
-    }
-
-    // ─────────────────────────────────────
-    // OPTIONAL FINGERPRINT LOGGING
-    // ─────────────────────────────────────
-    if (fingerprint) {
-      try {
-        await supabase
-          .from('activation_logs')
-          .upsert(
-            {
-              license_key: cleanKey,
-              fingerprint: fingerprint,
-              activated_at: new Date().toISOString(),
-              device_metadata: req.body.deviceMetadata || null
-            },
-            {
-              onConflict: 'license_key,fingerprint',
-              ignoreDuplicates: false
-            }
-          );
-
-        console.log('📝 activation_logs updated');
-      } catch (logErr) {
-        console.error('⚠️ activation_logs failed:', logErr);
+    // ─────────────────────────────────────────────
+    // OPTIONAL: DEVICE CHECK
+    // ─────────────────────────────────────────────
+    if (license.device_id && fingerprint) {
+      if (license.device_id !== fingerprint) {
+        return res.json({
+          success: false,
+          activated: false,
+          error: 'DEVICE_MISMATCH'
+        });
       }
     }
 
-    // ─────────────────────────────────────
+    // ─────────────────────────────────────────────
     // FIRST ACTIVATION
-    // ─────────────────────────────────────
+    // ─────────────────────────────────────────────
     if (!license.device_id && fingerprint) {
       await supabase
         .from('licenses')
         .update({
           device_id: fingerprint,
-          activated_at: new Date().toISOString(),
-          status: 'active'
+          status: 'active',
+          activated_at: new Date().toISOString()
         })
         .eq('license_key', cleanKey);
 
-      console.log('✅ FIRST ACTIVATION COMPLETE');
+      console.log('✅ FIRST ACTIVATION');
 
       return res.json({
         success: true,
@@ -229,28 +156,9 @@ app.post('/verify-license', async (req, res) => {
       });
     }
 
-    // ─────────────────────────────────────
-    // DEVICE MISMATCH
-    // ─────────────────────────────────────
-    if (
-      fingerprint &&
-      license.device_id &&
-      license.device_id !== fingerprint
-    ) {
-      console.log('❌ DEVICE MISMATCH');
-
-      return res.json({
-        success: false,
-        activated: false,
-        error: 'DEVICE_MISMATCH'
-      });
-    }
-
-    // ─────────────────────────────────────
+    // ─────────────────────────────────────────────
     // SUCCESS
-    // ─────────────────────────────────────
-    console.log('✅ LICENSE VERIFIED');
-
+    // ─────────────────────────────────────────────
     return res.json({
       success: true,
       activated: true,
@@ -259,9 +167,9 @@ app.post('/verify-license', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('❌ VERIFY ERROR:', err);
+    console.error('❌ SERVER ERROR:', err);
 
-    return res.status(500).json({
+    return res.json({
       success: false,
       activated: false,
       error: 'NETWORK_ERROR'
@@ -274,21 +182,6 @@ app.post('/verify-license', async (req, res) => {
 // ─────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 
-const server = app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
-
-// ─────────────────────────────────────────────
-// ERROR HANDLING
-// ─────────────────────────────────────────────
-server.on('error', (err) => {
-  console.error('❌ Server error:', err);
-});
-
-process.on('uncaughtException', (err) => {
-  console.error('❌ Uncaught Exception:', err);
-});
-
-process.on('unhandledRejection', (reason) => {
-  console.error('❌ Unhandled Rejection:', reason);
+app.listen(PORT, () => {
+  console.log(`🚀 SERVER RUNNING ON ${PORT}`);
 });
