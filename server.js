@@ -26,7 +26,7 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
 }
 
 if (!process.env.ADMIN_JWT_SECRET) {
-  console.warn('⚠️  ADMIN_JWT_SECRET is not set — using insecure default. Set this env var in production!');
+  console.warn('⚠️ ADMIN_JWT_SECRET is not set — using insecure default');
 }
 
 // ─────────────────────────────────────────────
@@ -53,11 +53,14 @@ const ALLOWED_ORIGINS = [
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (Electron file://, curl, Postman, server-to-server)
     if (!origin) return callback(null, true);
-    if (ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+
+    if (ALLOWED_ORIGINS.includes(origin)) {
+      return callback(null, true);
+    }
+
     console.warn(`🚫 CORS blocked origin: ${origin}`);
-    return callback(new Error(`CORS policy: origin not allowed — ${origin}`), false);
+    return callback(new Error(`CORS policy blocked: ${origin}`), false);
   },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -86,7 +89,7 @@ app.get('/health', (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// 🔥 LICENSE VERIFICATION ENDPOINT (FIXED)
+// LICENSE VERIFICATION ENDPOINT
 // ─────────────────────────────────────────────
 app.post('/verify-license', async (req, res) => {
   try {
@@ -95,7 +98,9 @@ app.post('/verify-license', async (req, res) => {
 
     const { licenseKey, fingerprint } = req.body;
 
-    // validation
+    // ─────────────────────────────────────
+    // BASIC VALIDATION
+    // ─────────────────────────────────────
     if (!licenseKey || typeof licenseKey !== 'string') {
       return res.status(400).json({
         success: false,
@@ -104,35 +109,12 @@ app.post('/verify-license', async (req, res) => {
       });
     }
 
-    // ── Helper: upsert activation_logs (non-blocking, never breaks response) ──
-    const logActivation = (key, fp, metadata) => {
-      if (isOfflineMode || !fp) return;
-      supabase
-        .from('activation_logs')
-        .upsert(
-          {
-            license_key:      key,
-            fingerprint:      fp,
-            activated_at:     new Date().toISOString(),
-            device_metadata:  metadata || null
-          },
-          { onConflict: 'license_key,fingerprint', ignoreDuplicates: false }
-        )
-        .then(({ error: logErr }) => {
-          if (logErr) console.error('⚠️ activation_logs write failed:', logErr.message);
-          else        console.log('📝 activation_logs: entry saved/updated');
-        });
-    };
-    // ──────────────────────────────────────────────────────────────────────────
-
-    // ─────────────────────────────────────
-    // TEMP LOGIC (replace later with Supabase)
-    // ─────────────────────────────────────
     const cleanKey = licenseKey.trim();
 
-    const isValid = cleanKey.startsWith('JFY-');
-
-    if (!isValid) {
+    // ─────────────────────────────────────
+    // STRICT PREFIX CHECK
+    // ─────────────────────────────────────
+    if (!cleanKey.startsWith('JFY-')) {
       return res.json({
         success: false,
         activated: false,
@@ -140,51 +122,134 @@ app.post('/verify-license', async (req, res) => {
       });
     }
 
-    if (!isOfflineMode) {
-      const { data: license, error: fetchError } = await supabase
-        .from('licenses')
-        .select('*')
-        .eq('license_key', cleanKey)
-        .single();
+    // ─────────────────────────────────────
+    // OFFLINE MODE BLOCK
+    // ─────────────────────────────────────
+    if (isOfflineMode) {
+      console.warn('❌ OFFLINE MODE ACTIVE');
 
-      if (license) {
-        if (license.device_id) {
-          if (license.device_id !== fingerprint) {
-            return res.json({
-              success: false,
-              activated: false,
-              error: 'DEVICE_MISMATCH'
-            });
-          }
-          // Device already matched — log re-verification
-          logActivation(cleanKey, fingerprint, req.body.deviceMetadata);
-        } else {
-          // First activation — store fingerprint in licenses table
-          await supabase
-            .from('licenses')
-            .update({
-              device_id:    fingerprint,
-              status:       'active',
-              activated_at: new Date().toISOString()
-            })
-            .eq('license_key', cleanKey);
+      return res.status(503).json({
+        success: false,
+        activated: false,
+        error: 'NETWORK_ERROR'
+      });
+    }
 
-          console.log('✅ LICENSE ACTIVATED AND LINKED TO DEVICE');
+    // ─────────────────────────────────────
+    // FETCH LICENSE FROM SUPABASE
+    // ─────────────────────────────────────
+    const { data: license, error: fetchError } = await supabase
+      .from('licenses')
+      .select('*')
+      .eq('license_key', cleanKey)
+      .single();
 
-          // Write to activation_logs
-          logActivation(cleanKey, fingerprint, req.body.deviceMetadata);
+    if (fetchError) {
+      console.error('❌ SUPABASE FETCH ERROR:', fetchError);
 
-          return res.json({
-            success: true,
-            activated: true,
-            firstActivation: true,
-            fingerprintMatched: true
-          });
-        }
+      return res.status(500).json({
+        success: false,
+        activated: false,
+        error: 'NETWORK_ERROR'
+      });
+    }
+
+    // ─────────────────────────────────────
+    // LICENSE NOT FOUND
+    // ─────────────────────────────────────
+    if (!license) {
+      console.log('❌ LICENSE NOT FOUND');
+
+      return res.json({
+        success: false,
+        activated: false,
+        error: 'INVALID_LICENSE'
+      });
+    }
+
+    // ─────────────────────────────────────
+    // LICENSE STATUS CHECK
+    // ─────────────────────────────────────
+    if (license.status !== 'active') {
+      console.log('❌ LICENSE IS NOT ACTIVE');
+
+      return res.json({
+        success: false,
+        activated: false,
+        error: 'INVALID_LICENSE'
+      });
+    }
+
+    // ─────────────────────────────────────
+    // OPTIONAL FINGERPRINT LOGGING
+    // ─────────────────────────────────────
+    if (fingerprint) {
+      try {
+        await supabase
+          .from('activation_logs')
+          .upsert(
+            {
+              license_key: cleanKey,
+              fingerprint: fingerprint,
+              activated_at: new Date().toISOString(),
+              device_metadata: req.body.deviceMetadata || null
+            },
+            {
+              onConflict: 'license_key,fingerprint',
+              ignoreDuplicates: false
+            }
+          );
+
+        console.log('📝 activation_logs updated');
+      } catch (logErr) {
+        console.error('⚠️ activation_logs failed:', logErr);
       }
     }
 
-    console.log('✅ LICENSE VALIDATED');
+    // ─────────────────────────────────────
+    // FIRST ACTIVATION
+    // ─────────────────────────────────────
+    if (!license.device_id && fingerprint) {
+      await supabase
+        .from('licenses')
+        .update({
+          device_id: fingerprint,
+          activated_at: new Date().toISOString(),
+          status: 'active'
+        })
+        .eq('license_key', cleanKey);
+
+      console.log('✅ FIRST ACTIVATION COMPLETE');
+
+      return res.json({
+        success: true,
+        activated: true,
+        firstActivation: true,
+        fingerprintMatched: true
+      });
+    }
+
+    // ─────────────────────────────────────
+    // DEVICE MISMATCH
+    // ─────────────────────────────────────
+    if (
+      fingerprint &&
+      license.device_id &&
+      license.device_id !== fingerprint
+    ) {
+      console.log('❌ DEVICE MISMATCH');
+
+      return res.json({
+        success: false,
+        activated: false,
+        error: 'DEVICE_MISMATCH'
+      });
+    }
+
+    // ─────────────────────────────────────
+    // SUCCESS
+    // ─────────────────────────────────────
+    console.log('✅ LICENSE VERIFIED');
 
     return res.json({
       success: true,
@@ -198,6 +263,7 @@ app.post('/verify-license', async (req, res) => {
 
     return res.status(500).json({
       success: false,
+      activated: false,
       error: 'NETWORK_ERROR'
     });
   }
