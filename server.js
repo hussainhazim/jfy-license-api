@@ -43,16 +43,12 @@ const { supabase } = require('./supabase');
 const app = express();
 
 // ─────────────────────────────────────────────
-// CORS — allow Electron apps (file:// / app://)
-// and local dev servers. Render itself is the
-// public endpoint, so no web origin needed.
+// CORS
 // ─────────────────────────────────────────────
 const ALLOWED_ORIGINS = [
-  // Electron renderers use file:// or app:// — these come through as null or the scheme below
-  'app://.',
-  'http://localhost:5173',
   'http://localhost:5174',
-  'https://jfy-license-api.onrender.com',
+  'http://localhost:5175',
+  'http://127.0.0.1:5175'
 ];
 
 app.use(cors({
