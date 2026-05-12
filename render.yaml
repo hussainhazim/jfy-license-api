@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: jfy-license-api
+    runtime: node
+    plan: free
+    buildCommand: npm install --omit=dev
+    startCommand: node server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SUPABASE_URL
+        sync: false          # set manually in Render dashboard
+      - key: SUPABASE_SERVICE_ROLE
+        sync: false          # set manually in Render dashboard
+      - key: ADMIN_JWT_SECRET
+        sync: false          # set manually in Render dashboard
