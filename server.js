@@ -104,6 +104,27 @@ app.post('/verify-license', async (req, res) => {
       });
     }
 
+    // ── Helper: upsert activation_logs (non-blocking, never breaks response) ──
+    const logActivation = (key, fp, metadata) => {
+      if (isOfflineMode || !fp) return;
+      supabase
+        .from('activation_logs')
+        .upsert(
+          {
+            license_key:      key,
+            fingerprint:      fp,
+            activated_at:     new Date().toISOString(),
+            device_metadata:  metadata || null
+          },
+          { onConflict: 'license_key,fingerprint', ignoreDuplicates: false }
+        )
+        .then(({ error: logErr }) => {
+          if (logErr) console.error('⚠️ activation_logs write failed:', logErr.message);
+          else        console.log('📝 activation_logs: entry saved/updated');
+        });
+    };
+    // ──────────────────────────────────────────────────────────────────────────
+
     // ─────────────────────────────────────
     // TEMP LOGIC (replace later with Supabase)
     // ─────────────────────────────────────
@@ -135,18 +156,24 @@ app.post('/verify-license', async (req, res) => {
               error: 'DEVICE_MISMATCH'
             });
           }
+          // Device already matched — log re-verification
+          logActivation(cleanKey, fingerprint, req.body.deviceMetadata);
         } else {
-          // First activation, store fingerprint
+          // First activation — store fingerprint in licenses table
           await supabase
             .from('licenses')
             .update({
-              device_id: fingerprint,
-              status: 'active',
+              device_id:    fingerprint,
+              status:       'active',
               activated_at: new Date().toISOString()
             })
             .eq('license_key', cleanKey);
-            
+
           console.log('✅ LICENSE ACTIVATED AND LINKED TO DEVICE');
+
+          // Write to activation_logs
+          logActivation(cleanKey, fingerprint, req.body.deviceMetadata);
+
           return res.json({
             success: true,
             activated: true,
