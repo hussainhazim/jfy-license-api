@@ -156,4 +156,54 @@ router.post('/licenses/reset-device', requireAdmin, async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GENERATE LICENSE
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/licenses/generate', requireAdmin, async (req, res) => {
+  try {
+    // ── Generate key: JFY-XXXX-XXXX ──────────────────────────────────────────
+    const segment = () =>
+      Math.random().toString(36).substring(2, 6).toUpperCase();
+
+    const generatedKey = `JFY-${segment()}-${segment()}`;
+
+    console.log('─────────────────────────────────────');
+    console.log('🔑 LICENSE CREATED:', generatedKey);
+
+    // ── Insert into Supabase ──────────────────────────────────────────────────
+    const { data, error } = await supabase
+      .from('licenses')
+      .insert([
+        {
+          license_key: generatedKey,
+          status: 'inactive',
+          created_at: new Date().toISOString()
+        }
+      ])
+      .select()
+      .single();
+
+    if (error) {
+      console.error('❌ SUPABASE INSERT ERROR:', error.message, error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to persist license: ' + error.message
+      });
+    }
+
+    console.log('✅ SUPABASE INSERT SUCCESS — key:', generatedKey);
+    console.log('─────────────────────────────────────');
+
+    return res.json({
+      success: true,
+      licenseKey: data.license_key,
+      license: data
+    });
+
+  } catch (err) {
+    console.error('❌ SUPABASE INSERT ERROR (exception):', err);
+    return res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
 module.exports = router;
