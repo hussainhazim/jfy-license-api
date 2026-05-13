@@ -64,7 +64,9 @@ app.use(
         'http://127.0.0.1:5175'
       ];
 
-      if (allowed.includes(origin)) return cb(null, true);
+      if (allowed.includes(origin)) {
+        return cb(null, true);
+      }
 
       return cb(new Error('CORS BLOCKED'), false);
     },
@@ -85,9 +87,9 @@ app.get('/', (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// ADMIN LOGIN (FIXED)
+// ADMIN LOGIN
 // ─────────────────────────────────────────────
-app.post('/admin/login', async (req, res) => {
+app.post('/admin/login', (req, res) => {
   try {
     const { username, password } = req.body;
 
@@ -109,7 +111,7 @@ app.post('/admin/login', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// ADMIN STATS (FIXED)
+// ADMIN STATS
 // ─────────────────────────────────────────────
 app.get('/admin/stats', async (req, res) => {
   try {
@@ -151,12 +153,45 @@ app.get('/admin/stats', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
+// GET ALL LICENSES (FIX FOR ADMIN PANEL ERROR)
+// ─────────────────────────────────────────────
+app.get('/admin/licenses', async (req, res) => {
+  try {
+    if (isOfflineMode) {
+      return res.json({
+        success: true,
+        licenses: []
+      });
+    }
+
+    const { data, error } = await supabase
+      .from('licenses')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      return res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+
+    return res.json({
+      success: true,
+      licenses: data
+    });
+
+  } catch (err) {
+    console.error('❌ LICENSES ERROR:', err);
+    return res.status(500).json({ success: false });
+  }
+});
+
+// ─────────────────────────────────────────────
 // CREATE LICENSE
 // ─────────────────────────────────────────────
 app.post('/admin/create-license', async (req, res) => {
   try {
-    console.log('🔥 CREATE LICENSE REQUEST');
-
     if (isOfflineMode) {
       return res.json({
         success: true,
@@ -202,7 +237,7 @@ app.post('/admin/create-license', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────
-// VERIFY LICENSE (UNCHANGED BUT SAFE)
+// VERIFY LICENSE
 // ─────────────────────────────────────────────
 app.post('/verify-license', async (req, res) => {
   try {
