@@ -37,6 +37,8 @@ console.log('📋 ENV STATUS CHECK');
 console.log(`SUPABASE_URL               : ${SUPABASE_URL ? 'OK' : 'MISSING'}`);
 console.log(`SUPABASE_SERVICE_ROLE_KEY : ${SUPABASE_SERVICE_ROLE_KEY ? 'OK' : 'MISSING'}`);
 console.log(`JWT_SECRET                : ${JWT_SECRET ? 'OK' : 'MISSING'}`);
+console.log('SUPABASE_URL:', SUPABASE_URL);
+console.log('KEY EXISTS:', !!SUPABASE_SERVICE_ROLE_KEY);
 console.log('─────────────────────────────────────');
 
 let isOfflineMode = false;
@@ -167,6 +169,14 @@ function verifyAdmin(req, res, next) {
 // ─────────────────────────────────────────────
 // AUDIT LOGGER
 // ─────────────────────────────────────────────
+
+// Events that MUST carry license_key, fingerprint, and timestamp.
+const STRICT_AUDIT_EVENTS = new Set([
+  'DEVICE_BANNED',
+  'DEVICE_UNBANNED',
+  'VERIFY_BLOCKED'
+]);
+
 async function logAudit(
   action,
   username,
@@ -180,6 +190,18 @@ async function logAudit(
       req.headers['x-forwarded-for'] ||
       req.socket.remoteAddress;
 
+    const timestamp = new Date().toISOString();
+
+    // For strict audit events, enforce required fields and warn if missing.
+    if (STRICT_AUDIT_EVENTS.has(action)) {
+      if (!metadata.license_key) {
+        console.warn(`⚠️  AUDIT [${action}] missing license_key`);
+      }
+      if (!metadata.fingerprint) {
+        console.warn(`⚠️  AUDIT [${action}] missing fingerprint`);
+      }
+    }
+
     await supabase
       .from('activity_logs')
       .insert([
@@ -188,10 +210,13 @@ async function logAudit(
           metadata: {
             username,
             ip,
+            // Strict events always include timestamp inside metadata too.
+            ...(STRICT_AUDIT_EVENTS.has(action)
+              ? { timestamp }
+              : {}),
             ...metadata
           },
-          created_at:
-            new Date().toISOString()
+          created_at: timestamp
         }
       ]);
 
@@ -644,6 +669,217 @@ app.post(
 );
 
 // ─────────────────────────────────────────────
+// BAN DEVICE
+// ─────────────────────────────────────────────
+app.post(
+  '/admin/licenses/ban-device',
+  verifyAdmin,
+  async (req, res) => {
+
+    try {
+
+      const { license_key } = req.body;
+
+      if (
+        !license_key ||
+        typeof license_key !== 'string'
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: 'INVALID_LICENSE_KEY'
+        });
+      }
+
+      const cleanKey = license_key.trim();
+
+      // ─────────────────────────
+      // CONFIRM LICENSE EXISTS
+      // ─────────────────────────
+      const { data: existing, error: fetchError } =
+        await supabase
+          .from('licenses')
+          .select('*')
+          .eq('license_key', cleanKey)
+          .limit(1);
+
+      if (fetchError) {
+        console.error('❌ BAN FETCH ERROR:', fetchError);
+
+        return res.status(500).json({
+          success: false,
+          error: 'FETCH_FAILED'
+        });
+      }
+
+      if (!existing || existing.length === 0) {
+        return res.status(404).json({
+          success: false,
+          error: 'LICENSE_NOT_FOUND'
+        });
+      }
+
+      // ─────────────────────────
+      // APPLY BAN
+      // ─────────────────────────
+      const { data: updated, error: updateError } =
+        await supabase
+          .from('licenses')
+          .update({
+            is_banned: true,
+            status: 'banned',
+            banned_at: new Date().toISOString()
+          })
+          .eq('license_key', cleanKey)
+          .select();
+          console.log('✅ UPDATED LICENSE AFTER UNBAN:');
+          console.log(updated?.[0]);
+
+      if (updateError) {
+        console.error('❌ BAN UPDATE ERROR:', updateError);
+
+        return res.status(500).json({
+          success: false,
+          error: 'UPDATE_FAILED'
+        });
+      }
+
+      await logAudit(
+        'DEVICE_BANNED',
+        'admin',
+        req,
+        {
+          license_key: cleanKey,
+          fingerprint: existing[0]?.device_id || null,
+          // device_id preserved for backward compatibility
+          device_id: existing[0]?.device_id || null
+        }
+      );
+
+      console.log('🚫 DEVICE BANNED:', cleanKey);
+
+      return res.json({
+        success: true,
+        license: updated[0]
+      });
+
+    } catch (err) {
+
+      console.error('❌ BAN DEVICE CRASH:', err);
+
+      return res.status(500).json({
+        success: false,
+        error: err?.message || 'INTERNAL_SERVER_ERROR'
+      });
+    }
+  }
+);
+
+// ─────────────────────────────────────────────
+// UNBAN DEVICE
+// ─────────────────────────────────────────────
+app.post(
+  '/admin/licenses/unban-device',
+  verifyAdmin,
+  async (req, res) => {
+
+    try {
+
+      const { license_key } = req.body;
+
+      if (
+        !license_key ||
+        typeof license_key !== 'string'
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: 'INVALID_LICENSE_KEY'
+        });
+      }
+
+      const cleanKey = license_key.trim();
+
+      // ─────────────────────────
+      // CONFIRM LICENSE EXISTS
+      // ─────────────────────────
+      const { data: existing, error: fetchError } =
+        await supabase
+          .from('licenses')
+          .select('*')
+          .eq('license_key', cleanKey)
+          .limit(1);
+
+      if (fetchError) {
+        console.error('❌ UNBAN FETCH ERROR:', fetchError);
+
+        return res.status(500).json({
+          success: false,
+          error: 'FETCH_FAILED'
+        });
+      }
+
+      if (!existing || existing.length === 0) {
+        return res.status(404).json({
+          success: false,
+          error: 'LICENSE_NOT_FOUND'
+        });
+      }
+
+      // ─────────────────────────
+      // LIFT BAN
+      // ─────────────────────────
+      const { data: updated, error: updateError } =
+        await supabase
+          .from('licenses')
+          .update({
+            is_banned: false,
+            banned_at: null
+          })
+          .eq('license_key', cleanKey)
+          .select();
+          console.log('✅ UPDATED LICENSE AFTER BAN:');
+          console.log(updated?.[0]);
+
+      if (updateError) {
+        console.error('❌ UNBAN UPDATE ERROR:', updateError);
+
+        return res.status(500).json({
+          success: false,
+          error: 'UPDATE_FAILED'
+        });
+      }
+
+      await logAudit(
+        'DEVICE_UNBANNED',
+        'admin',
+        req,
+        {
+          license_key: cleanKey,
+          fingerprint: existing[0]?.device_id || null,
+          // device_id preserved for backward compatibility
+          device_id: existing[0]?.device_id || null
+        }
+      );
+
+      console.log('✅ DEVICE UNBANNED:', cleanKey);
+
+      return res.json({
+        success: true,
+        license: updated[0]
+      });
+
+    } catch (err) {
+
+      console.error('❌ UNBAN DEVICE CRASH:', err);
+
+      return res.status(500).json({
+        success: false,
+        error: err?.message || 'INTERNAL_SERVER_ERROR'
+      });
+    }
+  }
+);
+
+// ─────────────────────────────────────────────
 // VERIFY LICENSE
 // ─────────────────────────────────────────────
 app.post(
@@ -716,7 +952,14 @@ app.post(
       }
 
       const license = data?.[0];
-
+      console.log('────────────────────────');
+      console.log('🔍 VERIFY DEBUG');
+      console.log('LICENSE:', license?.license_key);
+      console.log('IS_BANNED:', license?.is_banned);
+      console.log('DEVICE_ID:', license?.device_id);
+      console.log('FINGERPRINT:', fingerprint);
+      console.log('STATUS:', license?.status);
+      console.log('────────────────────────');
       if (!license) {
 
         await logAudit(
@@ -734,6 +977,39 @@ app.post(
           error: 'INVALID_LICENSE'
         });
       }
+
+     // ─────────────────────────
+    // HARD BAN CHECK
+    // ─────────────────────────
+const isBanned =
+  license?.is_banned === true ||
+  license?.is_banned === 'true' ||
+  license?.status === 'banned';
+
+console.log('🚫 BAN CHECK RESULT:', isBanned);
+
+if (isBanned) {
+
+  console.log('⛔ DEVICE IS BANNED');
+
+  await logAudit(
+    'VERIFY_BLOCKED',
+    'system',
+    req,
+    {
+      license_key: cleanKey,
+      fingerprint: fingerprint || null,
+      device_id: license?.device_id || null
+    }
+  );
+
+  return res.json({
+    success: false,
+    activated: false,
+    banned: true,
+    error: 'DEVICE_BANNED'
+  });
+}
 
       // ─────────────────────────
       // EXPIRED LICENSE CHECK
@@ -787,6 +1063,8 @@ app.post(
             device_id: fingerprint,
             status: 'active',
             activated_at:
+              new Date().toISOString(),
+            last_seen:
               new Date().toISOString()
           })
           .eq(
@@ -826,8 +1104,18 @@ app.post(
       }
 
       // ─────────────────────────
-      // ALREADY ACTIVATED
+      // ALREADY ACTIVATED — UPDATE last_seen
       // ─────────────────────────
+      await supabase
+        .from('licenses')
+        .update({
+          last_seen: new Date().toISOString()
+        })
+        .eq(
+          'license_key',
+          cleanKey
+        );
+
       return res.json({
         success: true,
         activated: true,
