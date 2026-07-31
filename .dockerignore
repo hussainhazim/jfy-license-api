@@ -1,0 +1,28 @@
+# ── Node modules ─────────────────────────────
+# Never copy node_modules into the image.
+# The Dockerfile runs npm ci inside the build.
+node_modules
+
+# ── Secrets ──────────────────────────────────
+# NEVER bake secrets into the image.
+# Inject all env vars at run time via
+# docker run --env-file .env or compose envs.
+.env
+.env.*
+!.env.example
+
+# ── Git ──────────────────────────────────────
+.git
+.gitignore
+
+# ── Docs / non-runtime files ─────────────────
+# Keeps the image lean — these are not needed
+# at runtime inside the container.
+README.md
+*.md
+render.yaml
+
+# ── OS / editor noise ────────────────────────
+.DS_Store
+Thumbs.db
+*.log

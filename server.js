@@ -63,6 +63,14 @@ const supabase = isOfflineMode
 // ─────────────────────────────────────────────
 const app = express();
 
+// ─────────────────────────────────────────────
+// TRUST PROXY
+// Required when running behind Nginx/Caddy on VPS.
+// Ensures req.ip and X-Forwarded-For are correct
+// for rate limiting and audit logging.
+// ─────────────────────────────────────────────
+app.set('trust proxy', 1);
+
 app.use(express.json());
 
 // ─────────────────────────────────────────────
@@ -104,11 +112,15 @@ app.use(
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
 
-      const allowed = [
-        'http://localhost:5174',
-        'http://localhost:5175',
-        'http://127.0.0.1:5175'
-      ];
+      // CORS_ORIGINS env var: comma-separated list of allowed origins.
+      // Falls back to localhost for local development if not set.
+      const allowed = process.env.CORS_ORIGINS
+        ? process.env.CORS_ORIGINS.split(',').map(s => s.trim())
+        : [
+            'http://localhost:5174',
+            'http://localhost:5175',
+            'http://127.0.0.1:5175'
+          ];
 
       if (allowed.includes(origin)) {
         return cb(null, true);
@@ -232,6 +244,19 @@ app.get('/', (req, res) => {
   res.json({
     success: true,
     status: 'JFY API RUNNING',
+    offline: isOfflineMode
+  });
+});
+
+// ─────────────────────────────────────────────
+// HEALTH CHECK
+// Required by Docker HEALTHCHECK and render.yaml.
+// Returns 200 only when the server is fully up.
+// ─────────────────────────────────────────────
+app.get('/health', (req, res) => {
+  res.json({
+    success: true,
+    status: 'OK',
     offline: isOfflineMode
   });
 });
