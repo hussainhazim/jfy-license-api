@@ -1,0 +1,19 @@
+name: jfy-license-api
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: jfy-license-api
+
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    ports:
+      - "3000:3000"
+    # The HEALTHCHECK is already defined in the Dockerfile.
+    # Docker Compose will automatically use it and report the container's health status.
