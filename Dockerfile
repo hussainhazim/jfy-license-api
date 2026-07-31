@@ -4,7 +4,7 @@
 # This stage is discarded after build; nothing
 # from it leaks into the final image.
 # ─────────────────────────────────────────────
-FROM node:20-alpine AS deps
+FROM node:22-alpine AS deps
 
 WORKDIR /app
 
@@ -24,11 +24,11 @@ RUN npm ci --omit=dev
 # production node_modules. No build tools,
 # no package managers, no shell history.
 # ─────────────────────────────────────────────
-FROM node:20-alpine AS production
+FROM node:22-alpine AS production
 
 WORKDIR /app
 
-# node:20-alpine ships a built-in "node" user
+# node:22-alpine ships a built-in "node" user
 # (uid 1000). Run as that user — never root.
 RUN chown node:node /app
 
