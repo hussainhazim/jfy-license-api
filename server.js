@@ -209,6 +209,7 @@ async function logAudit(
       if (!metadata.license_key) {
         console.warn(`⚠️  AUDIT [${action}] missing license_key`);
       }
+
       if (!metadata.fingerprint) {
         console.warn(`⚠️  AUDIT [${action}] missing fingerprint`);
       }
@@ -218,14 +219,16 @@ async function logAudit(
       .from('activity_logs')
       .insert([
         {
-          action,
+          action_type: action,
           metadata: {
             username,
             ip,
+
             // Strict events always include timestamp inside metadata too.
             ...(STRICT_AUDIT_EVENTS.has(action)
               ? { timestamp }
               : {}),
+
             ...metadata
           },
           created_at: timestamp
@@ -347,14 +350,60 @@ app.post(
         req.headers['x-forwarded-for'] ||
         req.socket.remoteAddress;
 
+      // activity_logs.entity_id is a UUID.
+      // The Admin Panel may send either the license UUID
+      // or the license key.
+      // Resolve a license key to the real UUID before inserting.
+      let entityId = null;
+
+      const rawLicenseId =
+        typeof license_id === 'string'
+          ? license_id.trim()
+          : null;
+
+      if (rawLicenseId) {
+        const UUID_PATTERN =
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+        if (UUID_PATTERN.test(rawLicenseId)) {
+          entityId = rawLicenseId;
+        } else {
+          const {
+            data: licenseRow,
+            error: licenseLookupError
+          } = await supabase
+            .from('licenses')
+            .select('id')
+            .eq('license_key', rawLicenseId)
+            .limit(1);
+
+          if (licenseLookupError) {
+            console.error(
+              '❌ ACTIVITY LICENSE LOOKUP ERROR:',
+              licenseLookupError
+            );
+          } else {
+            entityId =
+              licenseRow?.[0]?.id || null;
+          }
+        }
+      }
+
       const { error } = await supabase
         .from('activity_logs')
         .insert([
           {
-            action,
-            license_id: license_id || null,
+            action_type: action,
+            entity_id: entityId,
             metadata: {
               ip,
+
+              ...(rawLicenseId
+                ? {
+                    license_id: rawLicenseId
+                  }
+                : {}),
+
               ...metadata
             },
             created_at:
@@ -363,7 +412,10 @@ app.post(
         ]);
 
       if (error) {
-        console.error('❌ ACTIVITY INSERT ERROR:', error);
+        console.error(
+          '❌ ACTIVITY INSERT ERROR:',
+          error
+        );
       }
 
       return res.json({
@@ -371,7 +423,10 @@ app.post(
       });
 
     } catch (err) {
-      console.error('❌ ACTIVITY LOG ERROR:', err);
+      console.error(
+        '❌ ACTIVITY LOG ERROR:',
+        err
+      );
 
       return res.status(500).json({
         success: false
@@ -405,7 +460,10 @@ app.get(
           .select('*');
 
       if (error) {
-        console.error('❌ STATS QUERY ERROR:', error);
+        console.error(
+          '❌ STATS QUERY ERROR:',
+          error
+        );
 
         return res.status(500).json({
           success: false,
@@ -435,7 +493,10 @@ app.get(
       });
 
     } catch (err) {
-      console.error('❌ STATS ERROR:', err);
+      console.error(
+        '❌ STATS ERROR:',
+        err
+      );
 
       return res.status(500).json({
         success: false
@@ -468,7 +529,10 @@ app.get(
           });
 
       if (error) {
-        console.error('❌ LICENSE FETCH ERROR:', error);
+        console.error(
+          '❌ LICENSE FETCH ERROR:',
+          error
+        );
 
         return res.status(500).json({
           success: false,
@@ -482,7 +546,10 @@ app.get(
       });
 
     } catch (err) {
-      console.error('❌ LICENSES ERROR:', err);
+      console.error(
+        '❌ LICENSES ERROR:',
+        err
+      );
 
       return res.status(500).json({
         success: false
@@ -517,10 +584,22 @@ app.post(
 
     try {
 
-      console.log('─────────────────────────────────────');
-      console.log('📥 CREATE LICENSE REQUEST');
-      console.log('BODY:', req.body);
-      console.log('─────────────────────────────────────');
+      console.log(
+        '─────────────────────────────────────'
+      );
+
+      console.log(
+        '📥 CREATE LICENSE REQUEST'
+      );
+
+      console.log(
+        'BODY:',
+        req.body
+      );
+
+      console.log(
+        '─────────────────────────────────────'
+      );
 
       if (isOfflineMode) {
         return res.json({
@@ -541,11 +620,16 @@ app.post(
 
           let result = '';
 
-          for (let i = 0; i < length; i++) {
+          for (
+            let i = 0;
+            i < length;
+            i++
+          ) {
 
             result += chars.charAt(
               Math.floor(
-                Math.random() * chars.length
+                Math.random() *
+                chars.length
               )
             );
           }
@@ -562,6 +646,23 @@ app.post(
         req.body.duration ||
         '1m';
 
+      const validPlans = new Set([
+        '1d',
+        'monthly',
+        '1m',
+        '3m',
+        'yearly',
+        '1y',
+        'lifetime'
+      ]);
+
+      if (!validPlans.has(plan)) {
+        return res.status(400).json({
+          success: false,
+          error: 'INVALID_PLAN'
+        });
+      }
+
       let expires_at = null;
 
       if (plan !== 'lifetime') {
@@ -572,43 +673,92 @@ app.post(
           plan === 'monthly' ||
           plan === '1m'
         ) {
-          now.setMonth(now.getMonth() + 1);
+
+          now.setMonth(
+            now.getMonth() + 1
+          );
+
         }
 
         else if (
           plan === 'yearly' ||
           plan === '1y'
         ) {
-          now.setFullYear(now.getFullYear() + 1);
+
+          now.setFullYear(
+            now.getFullYear() + 1
+          );
+
         }
 
         else if (
           plan === '1d'
         ) {
-          now.setDate(now.getDate() + 1);
+
+          now.setDate(
+            now.getDate() + 1
+          );
         }
 
-        expires_at = now.toISOString();
+        else if (
+          plan === '3m'
+        ) {
+
+          now.setMonth(
+            now.getMonth() + 3
+          );
+        }
+
+        expires_at =
+          now.toISOString();
       }
 
       const generatedKey =
         generateLicenseKey();
 
-      console.log('🔑 GENERATED:', generatedKey);
-      console.log('📅 PLAN:', plan);
-      console.log('📅 EXPIRES:', expires_at);
+      console.log(
+        '🔑 GENERATED:',
+        generatedKey
+      );
+
+      console.log(
+        '📅 PLAN:',
+        plan
+      );
+
+      console.log(
+        '📅 EXPIRES:',
+        expires_at
+      );
 
       const insertPayload = {
-        license_key: generatedKey,
-        plan_type: plan,
-        status: 'inactive',
-        device_id: null,
-        created_at: new Date().toISOString(),
-        expires_at: expires_at
+
+        license_key:
+          generatedKey,
+
+        plan_type:
+          plan,
+
+        status:
+          'inactive',
+
+        device_id:
+          null,
+
+        created_at:
+          new Date().toISOString(),
+
+        expires_at:
+          expires_at
       };
 
-      console.log('📦 INSERT PAYLOAD:');
-      console.log(insertPayload);
+      console.log(
+        '📦 INSERT PAYLOAD:'
+      );
+
+      console.log(
+        insertPayload
+      );
 
       const { data, error } =
         await supabase
@@ -623,25 +773,44 @@ app.post(
       // ─────────────────────────
       if (error) {
 
-        console.error('❌ FULL SUPABASE INSERT ERROR');
+        console.error(
+          '❌ FULL SUPABASE INSERT ERROR'
+        );
 
         console.error({
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-          code: error.code
+          message:
+            error.message,
+
+          details:
+            error.details,
+
+          hint:
+            error.hint,
+
+          code:
+            error.code
         });
 
         return res.status(500).json({
           success: false,
-          error: error.message,
-          details: error.details,
-          hint: error.hint,
-          code: error.code
+          error:
+            error.message,
+
+          details:
+            error.details,
+
+          hint:
+            error.hint,
+
+          code:
+            error.code
         });
       }
 
-      if (!data || data.length === 0) {
+      if (
+        !data ||
+        data.length === 0
+      ) {
 
         console.error(
           '❌ INSERT RETURNED EMPTY DATA'
@@ -654,23 +823,35 @@ app.post(
         });
       }
 
-      console.log('✅ LICENSE CREATED SUCCESSFULLY');
-      console.log(data[0]);
+      console.log(
+        '✅ LICENSE CREATED SUCCESSFULLY'
+      );
+
+      console.log(
+        data[0]
+      );
 
       await logAudit(
         'CREATE_LICENSE',
         'admin',
         req,
         {
-          license_key: generatedKey,
-          plan_type: plan
+          license_key:
+            generatedKey,
+
+          plan_type:
+            plan
         }
       );
 
       return res.json({
         success: true,
-        licenseKey: data[0].license_key,
-        license: data[0]
+
+        licenseKey:
+          data[0].license_key,
+
+        license:
+          data[0]
       });
 
     } catch (err) {
@@ -680,14 +861,22 @@ app.post(
       );
 
       console.error({
-        message: err?.message,
-        stack: err?.stack,
-        cause: err?.cause
+        message:
+          err?.message,
+
+        stack:
+          err?.stack,
+
+        cause:
+          err?.cause
       });
 
       return res.status(500).json({
         success: false,
-        error: err?.message || 'INTERNAL_SERVER_ERROR'
+
+        error:
+          err?.message ||
+          'INTERNAL_SERVER_ERROR'
       });
     }
   }
@@ -703,68 +892,111 @@ app.post(
 
     try {
 
-      const { license_key } = req.body;
+      const {
+        license_key
+      } = req.body;
 
       if (
         !license_key ||
         typeof license_key !== 'string'
       ) {
+
         return res.status(400).json({
           success: false,
-          error: 'INVALID_LICENSE_KEY'
+          error:
+            'INVALID_LICENSE_KEY'
         });
       }
 
-      const cleanKey = license_key.trim();
+      const cleanKey =
+        license_key.trim();
 
       // ─────────────────────────
       // CONFIRM LICENSE EXISTS
       // ─────────────────────────
-      const { data: existing, error: fetchError } =
+      const {
+        data: existing,
+        error: fetchError
+      } =
         await supabase
           .from('licenses')
           .select('*')
-          .eq('license_key', cleanKey)
+          .eq(
+            'license_key',
+            cleanKey
+          )
           .limit(1);
 
       if (fetchError) {
-        console.error('❌ BAN FETCH ERROR:', fetchError);
+
+        console.error(
+          '❌ BAN FETCH ERROR:',
+          fetchError
+        );
 
         return res.status(500).json({
           success: false,
-          error: 'FETCH_FAILED'
+          error:
+            'FETCH_FAILED'
         });
       }
 
-      if (!existing || existing.length === 0) {
+      if (
+        !existing ||
+        existing.length === 0
+      ) {
+
         return res.status(404).json({
           success: false,
-          error: 'LICENSE_NOT_FOUND'
+          error:
+            'LICENSE_NOT_FOUND'
         });
       }
 
       // ─────────────────────────
       // APPLY BAN
       // ─────────────────────────
-      const { data: updated, error: updateError } =
+      const {
+        data: updated,
+        error: updateError
+      } =
         await supabase
           .from('licenses')
           .update({
-            is_banned: true,
-            status: 'banned',
-            banned_at: new Date().toISOString()
+            is_banned:
+              true,
+
+            status:
+              'banned',
+
+            banned_at:
+              new Date().toISOString()
           })
-          .eq('license_key', cleanKey)
+          .eq(
+            'license_key',
+            cleanKey
+          )
           .select();
-          console.log('✅ UPDATED LICENSE AFTER UNBAN:');
-          console.log(updated?.[0]);
+
+      console.log(
+        '✅ UPDATED LICENSE AFTER UNBAN:'
+      );
+
+      console.log(
+        updated?.[0]
+      );
 
       if (updateError) {
-        console.error('❌ BAN UPDATE ERROR:', updateError);
+
+        console.error(
+          '❌ BAN UPDATE ERROR:',
+          updateError
+        );
 
         return res.status(500).json({
           success: false,
-          error: 'UPDATE_FAILED'
+          error:
+            'UPDATE_FAILED'
         });
       }
 
@@ -773,27 +1005,43 @@ app.post(
         'admin',
         req,
         {
-          license_key: cleanKey,
-          fingerprint: existing[0]?.device_id || null,
+          license_key:
+            cleanKey,
+
+          fingerprint:
+            existing[0]?.device_id ||
+            null,
+
           // device_id preserved for backward compatibility
-          device_id: existing[0]?.device_id || null
+          device_id:
+            existing[0]?.device_id ||
+            null
         }
       );
 
-      console.log('🚫 DEVICE BANNED:', cleanKey);
+      console.log(
+        '🚫 DEVICE BANNED:',
+        cleanKey
+      );
 
       return res.json({
         success: true,
-        license: updated[0]
+        license:
+          updated[0]
       });
 
     } catch (err) {
 
-      console.error('❌ BAN DEVICE CRASH:', err);
+      console.error(
+        '❌ BAN DEVICE CRASH:',
+        err
+      );
 
       return res.status(500).json({
         success: false,
-        error: err?.message || 'INTERNAL_SERVER_ERROR'
+        error:
+          err?.message ||
+          'INTERNAL_SERVER_ERROR'
       });
     }
   }
@@ -809,67 +1057,108 @@ app.post(
 
     try {
 
-      const { license_key } = req.body;
+      const {
+        license_key
+      } = req.body;
 
       if (
         !license_key ||
         typeof license_key !== 'string'
       ) {
+
         return res.status(400).json({
           success: false,
-          error: 'INVALID_LICENSE_KEY'
+          error:
+            'INVALID_LICENSE_KEY'
         });
       }
 
-      const cleanKey = license_key.trim();
+      const cleanKey =
+        license_key.trim();
 
       // ─────────────────────────
       // CONFIRM LICENSE EXISTS
       // ─────────────────────────
-      const { data: existing, error: fetchError } =
+      const {
+        data: existing,
+        error: fetchError
+      } =
         await supabase
           .from('licenses')
           .select('*')
-          .eq('license_key', cleanKey)
+          .eq(
+            'license_key',
+            cleanKey
+          )
           .limit(1);
 
       if (fetchError) {
-        console.error('❌ UNBAN FETCH ERROR:', fetchError);
+
+        console.error(
+          '❌ UNBAN FETCH ERROR:',
+          fetchError
+        );
 
         return res.status(500).json({
           success: false,
-          error: 'FETCH_FAILED'
+          error:
+            'FETCH_FAILED'
         });
       }
 
-      if (!existing || existing.length === 0) {
+      if (
+        !existing ||
+        existing.length === 0
+      ) {
+
         return res.status(404).json({
           success: false,
-          error: 'LICENSE_NOT_FOUND'
+          error:
+            'LICENSE_NOT_FOUND'
         });
       }
 
       // ─────────────────────────
       // LIFT BAN
       // ─────────────────────────
-      const { data: updated, error: updateError } =
+      const {
+        data: updated,
+        error: updateError
+      } =
         await supabase
           .from('licenses')
           .update({
-            is_banned: false,
-            banned_at: null
+            is_banned:
+              false,
+
+            banned_at:
+              null
           })
-          .eq('license_key', cleanKey)
+          .eq(
+            'license_key',
+            cleanKey
+          )
           .select();
-          console.log('✅ UPDATED LICENSE AFTER BAN:');
-          console.log(updated?.[0]);
+
+      console.log(
+        '✅ UPDATED LICENSE AFTER BAN:'
+      );
+
+      console.log(
+        updated?.[0]
+      );
 
       if (updateError) {
-        console.error('❌ UNBAN UPDATE ERROR:', updateError);
+
+        console.error(
+          '❌ UNBAN UPDATE ERROR:',
+          updateError
+        );
 
         return res.status(500).json({
           success: false,
-          error: 'UPDATE_FAILED'
+          error:
+            'UPDATE_FAILED'
         });
       }
 
@@ -878,27 +1167,43 @@ app.post(
         'admin',
         req,
         {
-          license_key: cleanKey,
-          fingerprint: existing[0]?.device_id || null,
+          license_key:
+            cleanKey,
+
+          fingerprint:
+            existing[0]?.device_id ||
+            null,
+
           // device_id preserved for backward compatibility
-          device_id: existing[0]?.device_id || null
+          device_id:
+            existing[0]?.device_id ||
+            null
         }
       );
 
-      console.log('✅ DEVICE UNBANNED:', cleanKey);
+      console.log(
+        '✅ DEVICE UNBANNED:',
+        cleanKey
+      );
 
       return res.json({
         success: true,
-        license: updated[0]
+        license:
+          updated[0]
       });
 
     } catch (err) {
 
-      console.error('❌ UNBAN DEVICE CRASH:', err);
+      console.error(
+        '❌ UNBAN DEVICE CRASH:',
+        err
+      );
 
       return res.status(500).json({
         success: false,
-        error: err?.message || 'INTERNAL_SERVER_ERROR'
+        error:
+          err?.message ||
+          'INTERNAL_SERVER_ERROR'
       });
     }
   }
@@ -924,7 +1229,8 @@ app.post(
         return res.json({
           success: false,
           activated: false,
-          error: 'OFFLINE_MODE'
+          error:
+            'OFFLINE_MODE'
         });
       }
 
@@ -938,21 +1244,26 @@ app.post(
           'system',
           req,
           {
-            error: 'INVALID_LICENSE'
+            error:
+              'INVALID_LICENSE'
           }
         );
 
         return res.json({
           success: false,
           activated: false,
-          error: 'INVALID_LICENSE'
+          error:
+            'INVALID_LICENSE'
         });
       }
 
       const cleanKey =
         licenseKey.trim();
 
-      const { data, error } =
+      const {
+        data,
+        error
+      } =
         await supabase
           .from('licenses')
           .select('*')
@@ -972,19 +1283,51 @@ app.post(
         return res.json({
           success: false,
           activated: false,
-          error: 'NETWORK_ERROR'
+          error:
+            'NETWORK_ERROR'
         });
       }
 
-      const license = data?.[0];
-      console.log('────────────────────────');
-      console.log('🔍 VERIFY DEBUG');
-      console.log('LICENSE:', license?.license_key);
-      console.log('IS_BANNED:', license?.is_banned);
-      console.log('DEVICE_ID:', license?.device_id);
-      console.log('FINGERPRINT:', fingerprint);
-      console.log('STATUS:', license?.status);
-      console.log('────────────────────────');
+      const license =
+        data?.[0];
+
+      console.log(
+        '────────────────────────'
+      );
+
+      console.log(
+        '🔍 VERIFY DEBUG'
+      );
+
+      console.log(
+        'LICENSE:',
+        license?.license_key
+      );
+
+      console.log(
+        'IS_BANNED:',
+        license?.is_banned
+      );
+
+      console.log(
+        'DEVICE_ID:',
+        license?.device_id
+      );
+
+      console.log(
+        'FINGERPRINT:',
+        fingerprint
+      );
+
+      console.log(
+        'STATUS:',
+        license?.status
+      );
+
+      console.log(
+        '────────────────────────'
+      );
+
       if (!license) {
 
         await logAudit(
@@ -992,62 +1335,78 @@ app.post(
           'system',
           req,
           {
-            error: 'INVALID_LICENSE'
+            error:
+              'INVALID_LICENSE'
           }
         );
 
         return res.json({
           success: false,
           activated: false,
-          error: 'INVALID_LICENSE'
+          error:
+            'INVALID_LICENSE'
         });
       }
 
-     // ─────────────────────────
-    // HARD BAN CHECK
-    // ─────────────────────────
-const isBanned =
-  license?.is_banned === true ||
-  license?.is_banned === 'true' ||
-  license?.status === 'banned';
+      // ─────────────────────────
+      // HARD BAN CHECK
+      // ─────────────────────────
+      const isBanned =
+        license?.is_banned === true ||
+        license?.is_banned === 'true' ||
+        license?.status === 'banned';
 
-console.log('🚫 BAN CHECK RESULT:', isBanned);
+      console.log(
+        '🚫 BAN CHECK RESULT:',
+        isBanned
+      );
 
-if (isBanned) {
+      if (isBanned) {
 
-  console.log('⛔ DEVICE IS BANNED');
+        console.log(
+          '⛔ DEVICE IS BANNED'
+        );
 
-  await logAudit(
-    'VERIFY_BLOCKED',
-    'system',
-    req,
-    {
-      license_key: cleanKey,
-      fingerprint: fingerprint || null,
-      device_id: license?.device_id || null
-    }
-  );
+        await logAudit(
+          'VERIFY_BLOCKED',
+          'system',
+          req,
+          {
+            license_key:
+              cleanKey,
 
-  return res.json({
-    success: false,
-    activated: false,
-    banned: true,
-    error: 'DEVICE_BANNED'
-  });
-}
+            fingerprint:
+              fingerprint || null,
+
+            device_id:
+              license?.device_id ||
+              null
+          }
+        );
+
+        return res.json({
+          success: false,
+          activated: false,
+          banned: true,
+          error:
+            'DEVICE_BANNED'
+        });
+      }
 
       // ─────────────────────────
       // EXPIRED LICENSE CHECK
       // ─────────────────────────
       if (
         license.expires_at &&
-        new Date(license.expires_at) < new Date()
+        new Date(license.expires_at) <
+          new Date()
       ) {
 
         return res.json({
           success: false,
           activated: false,
-          error: 'LICENSE_EXPIRED'
+          error:
+            'LICENSE_EXPIRED'
         });
       }
 
@@ -1067,7 +1426,8 @@ if (isBanned) {
           return res.json({
             success: false,
             activated: false,
-            error: 'DEVICE_MISMATCH'
+            error:
+              'DEVICE_MISMATCH'
           });
         }
       }
@@ -1082,20 +1442,26 @@ if (isBanned) {
 
         const {
           error: updateError
-        } = await supabase
-          .from('licenses')
-          .update({
-            device_id: fingerprint,
-            status: 'active',
-            activated_at:
-              new Date().toISOString(),
-            last_seen:
-              new Date().toISOString()
-          })
-          .eq(
-            'license_key',
-            cleanKey
-          );
+        } =
+          await supabase
+            .from('licenses')
+            .update({
+              device_id:
+                fingerprint,
+
+              status:
+                'active',
+
+              activated_at:
+                new Date().toISOString(),
+
+              last_seen:
+                new Date().toISOString()
+            })
+            .eq(
+              'license_key',
+              cleanKey
+            );
 
         if (updateError) {
 
@@ -1107,7 +1473,8 @@ if (isBanned) {
           return res.json({
             success: false,
             activated: false,
-            error: 'UPDATE_FAILED'
+            error:
+              'UPDATE_FAILED'
           });
         }
 
@@ -1116,15 +1483,19 @@ if (isBanned) {
           'system',
           req,
           {
-            license_id: cleanKey,
-            device_id: fingerprint
+            license_id:
+              cleanKey,
+
+            device_id:
+              fingerprint
           }
         );
 
         return res.json({
           success: true,
           activated: true,
-          firstActivation: true
+          firstActivation: true,
+          expiresAt: license.expires_at ?? null
         });
       }
 
@@ -1134,7 +1505,8 @@ if (isBanned) {
       await supabase
         .from('licenses')
         .update({
-          last_seen: new Date().toISOString()
+          last_seen:
+            new Date().toISOString()
         })
         .eq(
           'license_key',
@@ -1144,7 +1516,8 @@ if (isBanned) {
       return res.json({
         success: true,
         activated: true,
-        firstActivation: false
+        firstActivation: false,
+        expiresAt: license.expires_at ?? null
       });
 
     } catch (err) {
@@ -1157,7 +1530,8 @@ if (isBanned) {
       return res.status(500).json({
         success: false,
         activated: false,
-        error: 'NETWORK_ERROR'
+        error:
+          'NETWORK_ERROR'
       });
     }
   }
